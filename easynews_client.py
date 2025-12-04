@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+
 
 
 EASYNEWS_BASE = "https://members.easynews.com"
@@ -53,6 +57,18 @@ class EasynewsClient:
         self.username = username
         self.password = password
         self.s = session or requests.Session()
+
+        # Add exponential backoff
+        retries = Retry(
+            total=5,
+            backoff_factor=0.5,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE"],
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        self.s.mount("http://", adapter)
+        self.s.mount("https://", adapter)
+
         # Default headers
         self.s.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) EasynewsClient/1.0",
