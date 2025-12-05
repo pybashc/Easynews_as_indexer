@@ -1,5 +1,4 @@
 import base64
-import concurrent.futures
 import html
 import os
 import re
@@ -600,64 +599,19 @@ def api():
             ]
         else:
             c = client()
-            per_page = 250
-            items = []
-            current_page = 1
-            # Fetch in chunks of N pages concurrently until we have enough items
-            # This is a trade-off between memory, speed, and API rate limits.
-            PAGES_PER_CHUNK = 10
-            MAX_PAGES = 50 # Cap to prevent excessive requests for huge offsets
-            
-            while len(items) < offset + limit and current_page < MAX_PAGES:
-                
-                def fetch_page(page_num):
-                    try:
-                        return c.search(
-                            query=q,
-                            file_type="VIDEO",
-                            per_page=per_page,
-                            page=page_num,
-                            sort_field="relevance",
-                            sort_dir="-",
-                        )
-                    except Exception:
-                        return None
-
-                pages_to_fetch = range(current_page, min(current_page + PAGES_PER_CHUNK, MAX_PAGES + 1))
-                if not pages_to_fetch:
-                    break
-
-                chunk_data = {"data": [], "thumbURL": None, "thumbUrl": None}
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future_to_page = {executor.submit(fetch_page, p): p for p in pages_to_fetch}
-                    results = []
-                    for future in concurrent.futures.as_completed(future_to_page):
-                        res = future.result()
-                        if res and res.get("data"):
-                            results.append(res)
-                
-                if not results:
-                    break # No more results from API
-
-                # Combine results from the chunk
-                for res in sorted(results, key=lambda x: x.get("page", 0)):
-                    chunk_data["data"].extend(res.get("data", []))
-                    if not chunk_data["thumbURL"]:
-                        chunk_data["thumbURL"] = res.get("thumbURL")
-                    if not chunk_data["thumbUrl"]:
-                        chunk_data["thumbUrl"] = res.get("thumbUrl")
-
-                # Filter the current chunk and append to master list
-                items.extend(filter_and_map(
-                    chunk_data,
+            # aim for maximum results per page
+            data = c.search(query=q, file_type="VIDEO", per_page=250, sort_field="relevance", sort_dir="-")
+            if fallback_query:
+                items = filter_and_map(data, min_bytes=min_bytes)
+            else:
+                items = filter_and_map(
+                    data,
                     min_bytes=min_bytes,
                     query_tokens=query_tokens,
                     query_meta=query_meta,
                     strict_phrase=strict_phrase,
                     strict_match=strict_requested,
-                ))
-                
-                current_page += PAGES_PER_CHUNK
+                )
 
         # Trim by limit (handles fallback and real queries)
         items = items[offset : offset + limit]
