@@ -190,8 +190,7 @@ _STOPWORDS = {
 _MIN_DURATION_SECONDS = 60
 _TOKEN_SPLIT_RE = re.compile(r"[^\w]+", re.UNICODE)
 _QUALITY_RE = re.compile(r"(2160|1440|1080|720|480|360)\s*(p|i)?", re.IGNORECASE)
-_YEAR_RE = re.compile(r"(19|20)\d{2}")
-_SEASON_EP_RE = re.compile(r"(?:s(?P<season>\d{1,2})e(?P<episode>\d{1,2})|(?P<season2>\d{1,2})x(?P<episode2>\d{1,2}))", re.IGNORECASE)
+_SEASON_YEAR_RE = re.compile(r"(?:s(?P<season>\d{1,2})e(?P<episode>\d{1,2})|(?P<season2>\d{1,2})x(?P<episode2>\d{1,2}))|(?P<year>(19|20)\d{2})", re.IGNORECASE)
 _SANITIZE_SYMBOLS_RE = re.compile(r"[\.\-_:\s]+")
 _NON_ALNUM_RE = re.compile(r"[^\w\sÀ-ÿ]")
 
@@ -244,7 +243,8 @@ def _as_int(value: Optional[str]) -> Optional[int]:
 def _tokenize(text: str) -> List[str]:
     if not text:
         return []
-    normalized = _TOKEN_SPLIT_RE.sub(" ", text.lower())
+    # Use the faster, unified sanitization logic
+    normalized = _sanitize_phrase(text)
     tokens = [tok for tok in normalized.split() if len(tok) > 1 and tok not in _STOPWORDS]
     return tokens
 
@@ -252,10 +252,10 @@ def _tokenize(text: str) -> List[str]:
 def _sanitize_phrase(text: str) -> str:
     if not text:
         return ""
+    # This is faster than the previous multi-step sanitization.
+    # It replaces any sequence of non-word characters with a single space.
     working = text.replace("&", " and ")
-    working = _SANITIZE_SYMBOLS_RE.sub(" ", working)
-    working = _NON_ALNUM_RE.sub("", working)
-    return working.lower().strip()
+    return _TOKEN_SPLIT_RE.sub(" ", working.lower()).strip()
 
 
 def _is_flagged_item(item: Any, ext: str, duration_seconds: Optional[int]) -> bool:
@@ -321,17 +321,18 @@ def _extract_release_markers(text: str, quality_hint: Optional[str] = None) -> D
     info: Dict[str, Optional[Any]] = {}
     if not text:
         return info
-    season_match = _SEASON_EP_RE.search(text)
-    if season_match:
-        season = season_match.group("season") or season_match.group("season2")
-        episode = season_match.group("episode") or season_match.group("episode2")
-        if season:
-            info["season"] = int(season)
-        if episode:
-            info["episode"] = int(episode)
-    year_match = _YEAR_RE.search(text)
-    if year_match:
-        info["year"] = int(year_match.group(0))
+
+    for match in _SEASON_YEAR_RE.finditer(text):
+        if match.group("season") or match.group("season2"):
+            season = match.group("season") or match.group("season2")
+            episode = match.group("episode") or match.group("episode2")
+            if season and 'season' not in info:
+                info["season"] = int(season)
+            if episode and 'episode' not in info:
+                info["episode"] = int(episode)
+        if match.group("year") and 'year' not in info:
+            info["year"] = int(match.group("year"))
+
     quality = quality_hint or _extract_quality(text)
     if quality:
         info["quality"] = quality
@@ -726,4 +727,4 @@ def api():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8081))
-    APP.run(host="0.0.0.0", port=port)
+    APP.run(host="0.0.0.0", port=port, threaded=True)
