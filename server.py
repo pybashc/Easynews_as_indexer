@@ -19,6 +19,9 @@ _CLIENT: Optional[EasynewsClient] = None
 _CLIENT_LOCK = threading.Lock()
 _CLIENT_LOGIN_TTL = 600  # seconds
 _CLIENT_LAST_LOGIN: float = 0.0
+_CACHE_ITEM_TTL = 86400  # seconds (24 hours)
+_ITEM_CACHE: Dict[str, Dict] = {}
+_ITEM_CACHE_LOCK = threading.Lock()
 
 
 def _load_dotenv():
@@ -83,24 +86,37 @@ def xml_escape(s: str) -> str:
 
 
 def encode_id(item: dict) -> str:
-    # Pack info needed to build NZB for a single selection and preserve title for filename
-    payload = {
-        "hash": item.get("hash"),
-        "filename": item.get("filename"),
-        "ext": item.get("ext"),
-        "sig": item.get("sig"),
-        "title": item.get("title"),
-    }
-    if item.get("sample"):
-        payload["sample"] = True
-    raw = base64.urlsafe_b64encode(json.dumps(payload, ensure_ascii=False).encode()).decode().rstrip("=")
-    return raw
+    # Store item in cache and return its hash as the ID
+    item_hash = item.get("hash")
+    if not item_hash:
+        return ""  # Should not happen with valid data
+
+    now = time.time()
+    with _ITEM_CACHE_LOCK:
+        # Clean expired items to prevent cache from growing indefinitely
+        expired_keys = [k for k, v in _ITEM_CACHE.items() if now - v.get("timestamp", 0) > _CACHE_ITEM_TTL]
+        for k in expired_keys:
+            del _ITEM_CACHE[k]
+        
+        # Store new item
+        _ITEM_CACHE[item_hash] = {"item": item, "timestamp": now}
+    return item_hash
 
 
 def decode_id(enc: str) -> dict:
-    pad = "=" * (-len(enc) % 4)
-    raw = base64.urlsafe_b64decode(enc + pad).decode()
-    return json.loads(raw)
+    # Retrieve item from cache by its ID (hash)
+    with _ITEM_CACHE_LOCK:
+        cached = _ITEM_CACHE.get(enc)
+        if not cached:
+            raise ValueError("Item not found in cache")
+
+        # Check if item has expired
+        now = time.time()
+        if now - cached.get("timestamp", 0) > _CACHE_ITEM_TTL:
+            del _ITEM_CACHE[enc]  # Clean up expired item
+            raise ValueError("Item has expired from cache")
+
+        return cached["item"]
 
 
 def to_search_item(d: dict) -> SearchItem:
@@ -692,7 +708,11 @@ def api():
         enc_id = request.args.get("id")
         if not enc_id:
             return Response("Missing id", status=400)
-        d = decode_id(enc_id)
+        try:
+            d = decode_id(enc_id)
+        except ValueError:
+            return Response("Invalid or expired download link", status=404)
+
         if d.get("sample"):
             title = d.get("title", "Sample Item")
             safe_title = "sample"
